@@ -1,0 +1,51 @@
+name: Azure VM Windows Server 2025 cu Tailscale VPN și RDP privat
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy_vm:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: Creeaza resource group
+      run: az group create --name rg-ws2025 --location eastus
+
+    - name: Creaza VM fara IP public pentru RDP privat
+      run: |
+        az vm create \
+          --resource-group rg-ws2025 \
+          --name ws2025vm \
+          --image MicrosoftWindowsServer:windowsserver:windows2025:latest \
+          --size Standard_DS4_v2 \
+          --admin-username azureuser \
+          --admin-password "${{ secrets.AZURE_VM_PASSWORD }}" \
+          --public-ip-address "" \
+          --data-disk-sizes-gb 1024
+
+    - name: Instaleaza Tailscale pe VM si configureaza cu auth key
+      run: az vm run-command invoke --resource-group rg-ws2025 --name ws2025vm --command-id RunPowerShellScript --scripts "
+        Invoke-WebRequest -Uri 'https://pkgs.tailscale.com/stable/tailscale.exe' -OutFile 'C:\\ProgramData\\tailscale.exe'; 
+        Start-Process 'C:\\ProgramData\\tailscale.exe' -ArgumentList \"up --authkey ${{ secrets.TAILSCALE_AUTH_KEY }} --accept-routes --accept-dns=false\" -Wait;
+      "
+
+    - name: Extrage IP-ul Tailscale din VM si afiseaza informatii conexiune
+      id: extract_tailscale_ip
+      run: |
+        res=$(az vm run-command invoke --resource-group rg-ws2025 --name ws2025vm --command-id RunPowerShellScript --scripts "tailscale ip -4")
+        TAILSCALE_IP=$(echo "$res" | jq -r '.value[0].message' | tr -d '\r\n')
+        echo "Tailscale IP: $TAILSCALE_IP"
+        echo "User: azureuser"
+        echo "Password: [secret, folosit in AZURE_VM_PASSWORD]"
+
+    - name: Ruleaza script 28 ore in loop pe VM (PowerShell)
+      run: az vm run-command invoke --resource-group rg-ws2025 --name ws2025vm --command-id RunPowerShellScript --scripts "
+        \$start=Get-Date; 
+        while((Get-Date) -lt \$start.AddHours(28)) { Write-Output \"Loop running at \$(Get-Date)\"; Start-Sleep -Seconds 60 }
+      "
+      
