@@ -1,0 +1,206 @@
+name: RDP Gaming Server Windows (AMD Ryzen 7 - Radeon Graphics)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rdp-gaming:
+    runs-on: windows-2022
+    timeout-minutes: 4320
+
+    steps:
+      - name: Detectare GPU AMD Radeon (Ryzen 7)
+        shell: pwsh
+        run: |
+          Write-Host "=== Detectare GPU AMD Radeon pentru Ryzen 7 ==="
+          try {
+            # Căutăm GPU-uri AMD/Radeon
+            $gpuInfo = Get-WmiObject Win32_VideoController | Where-Object { 
+              $_.Name -match "AMD|Radeon" 
+            }
+            
+            if ($gpuInfo) {
+              Write-Host "GPU AMD Radeon detectat:"
+              $gpuInfo | Format-Table Name, AdapterRAM, VideoProcessor, DriverVersion
+              
+              # Informații suplimentare despre driver
+              Write-Host "=== Informații driver ==="
+              Get-CimInstance -ClassName Win32_PnPSignedDriver | Where-Object { 
+                  $_.DeviceName -match "AMD|Radeon" 
+              } | Select-Object DeviceName, DriverVersion, DriverDate | Format-Table
+            } else {
+              Write-Host "Nu s-a detectat GPU AMD Radeon. Runner-ul folosește probabil GPU virtual."
+              Write-Host "GPU-uri disponibile:"
+              Get-WmiObject Win32_VideoController | Format-Table Name, AdapterRAM
+            }
+          } catch {
+            Write-Host "Eroare la accesarea informațiilor GPU: $_"
+          }
+
+      - name: Activează Remote Desktop
+        shell: pwsh
+        run: |
+          Write-Host "Activare Remote Desktop..."
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          netsh advfirewall firewall add rule name="RDP-Allow" dir=in action=allow protocol=TCP localport=3389
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Restart-Service -Name TermService -Force
+          Write-Host "RDP activat pe portul 3389"
+
+      - name: Configurează utilizator pentru RDP
+        shell: pwsh
+        run: |
+          $user = "amdrunner"
+          $password = -join ((65..90) + (97..122) + (48..57) + @(33,35,36,37,42) | Get-Random -Count 20 | % {[char]$_})
+          
+          # Verifică dacă utilizatorul există
+          $existingUser = Get-LocalUser -Name $user -ErrorAction SilentlyContinue
+          
+          if ($existingUser) {
+              Write-Host "Utilizatorul $user există deja. Resetare parolă..."
+              Set-LocalUser -Name $user -Password (ConvertTo-SecureString $password -AsPlainText -Force)
+          } else {
+              Write-Host "Creare utilizator nou: $user"
+              New-LocalUser -Name $user -Password (ConvertTo-SecureString $password -AsPlainText -Force) -AccountNeverExpires
+              Add-LocalGroupMember -Group "Administrators" -Member $user
+              Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user
+          }
+          
+          # Activează contul
+          Enable-LocalUser -Name $user
+          
+          # Salvează credențialele
+          Write-Output "RDP_USER=$user" >> $env:GITHUB_ENV
+          Write-Output "RDP_PASS=$password" >> $env:GITHUB_ENV
+          Write-Host "Utilizator RDP configurat: $user"
+
+      - name: Instalează și configurează Tailscale
+        shell: pwsh
+        run: |
+          Write-Host "Instalare Tailscale..."
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          
+          try {
+              Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+              Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+              Start-Sleep -Seconds 5
+              
+              # Așteptă să fie instalat complet
+              $maxAttempts = 10
+              $attempt = 0
+              while ($attempt -lt $maxAttempts -and -not (Test-Path "$env:ProgramFiles\Tailscale\tailscale.exe")) {
+                  Start-Sleep -Seconds 3
+                  $attempt++
+              }
+              
+              if (Test-Path "$env:ProgramFiles\Tailscale\tailscale.exe") {
+                  Write-Host "Tailscale instalat cu succes"
+                  & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-amd-server-$env:GITHUB_RUN_ID --accept-routes
+                  Write-Host "Tailscale conectat la rețea"
+              } else {
+                  Write-Host "Eroare: Tailscale nu s-a instalat corect"
+              }
+          } catch {
+              Write-Host "Eroare la instalarea Tailscale: $_"
+          } finally {
+              if (Test-Path $installerPath) {
+                  Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+              }
+          }
+
+      - name: Optimizări pentru gaming
+        shell: pwsh
+        run: |
+          Write-Host "Aplicare optimizări de sistem..."
+          
+          # Optimizări de performanță
+          powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c  # High performance
+          
+          # Dezactivează effects visuale
+          Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" -Name "VisualFXSetting" -Value 2
+          
+          # Optimizări RDP
+          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "MaxMonitors" -Value 4
+          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "MaxXResolution" -Value 3840
+          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "MaxYResolution" -Value 2160
+          
+          Write-Host "Optimizări aplicate"
+
+      - name: Afișează informații de conectare
+        shell: pwsh
+        run: |
+          $rdpUser = $env:RDP_USER
+          $rdpPass = $env:RDP_PASS
+          
+          # Obține IP-ul Tailscale
+          $tsIp = ""
+          if (Test-Path "$env:ProgramFiles\Tailscale\tailscale.exe") {
+              try {
+                  $tsIp = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+                  $tsIp = $tsIp.Trim()
+              } catch {
+                  Write-Host "Nu s-a putut obține IP-ul Tailscale"
+              }
+          }
+          
+          # Informații sistem
+          $cpu = Get-WmiObject Win32_Processor | Select-Object -First 1
+          $ram = [math]::Round((Get-WmiObject Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)
+          $gpu = Get-WmiObject Win32_VideoController | Select-Object -First 1
+          
+          Write-Host ""
+          Write-Host "=== 🎮 SERVER RDP GAMING AMD RYZEN 7 ==="
+          Write-Host "=== 📋 INFORMATII SISTEM ==="
+          Write-Host "CPU: $($cpu.Name)"
+          Write-Host "RAM: $ram GB"
+          Write-Host "GPU: $($gpu.Name)"
+          Write-Host ""
+          Write-Host "=== 🔐 CREDENTIALE RDP ==="
+          Write-Host "Utilizator: $rdpUser"
+          Write-Host "Parola: $rdpPass"
+          if ($tsIp) {
+              Write-Host "IP Tailscale: $tsIp"
+          }
+          Write-Host ""
+          Write-Host "=== 📝 INSTRUCTIUNI CONECTARE ==="
+          Write-Host "1. Conectează-te la Tailscale"
+          Write-Host "2. Deschide Remote Desktop Connection"
+          Write-Host "3. Introdu IP-ul Tailscale: $tsIp"
+          Write-Host "4. Utilizează credențialele de mai sus"
+          Write-Host ""
+          Write-Host "=== ⚠️  ATENTIE ==="
+          Write-Host "Serverul va rula pentru 72 de ore (4320 minute)"
+          Write-Host "Salvează aceste informații în mod sigur!"
+          Write-Host "=============================================="
+
+      - name: Menține serverul activ
+        shell: pwsh
+        run: |
+          Write-Host "Server RDP AMD Ryzen 7 activ - Menținere conexiune..."
+          Write-Host "Timp rămas: 72 de ore"
+          Write-Host "Data/ora start: $(Get-Date)"
+          
+          $startTime = Get-Date
+          $endTime = $startTime.AddMinutes(4320)
+          
+          for ($i = 0; $i -lt 432; $i++) {
+              $currentTime = Get-Date
+              $remaining = $endTime - $currentTime
+              $hours = [math]::Floor($remaining.TotalHours)
+              $minutes = $remaining.Minutes
+              
+              Write-Host "[$($currentTime.ToString('HH:mm:ss'))] Ciclu $($i + 1)/432 - Rămân: $($hours)h $($minutes)m"
+              
+              # Verifică serviciile esențiale
+              $rdpService = Get-Service -Name TermService -ErrorAction SilentlyContinue
+              if ($rdpService.Status -ne 'Running') {
+                  Write-Host "Restartare serviciu RDP..."
+                  Start-Service -Name TermService
+              }
+              
+              Start-Sleep -Seconds 600
+          }
+          
+          Write-Host "Timpul a expirat. Serverul se va închide."
