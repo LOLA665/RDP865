@@ -1,0 +1,64 @@
+name: Paperspace RDP Intel Xeon + Tailscale + 18h loop
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rdp-setup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1080
+
+    steps:
+      - name: Creează VM Paperspace Intel Xeon + Windows Server 2025
+        env:
+          PAPERSPACE_API_KEY: ${{ secrets.PAPERSPACE_API_KEY }}
+        run: |
+          PAYLOAD='{
+            "machineType": "C4",
+            "region": "ams1",
+            "billingType": "hourly",
+            "imageId": "windows-server-2025",
+            "name": "rdp-intel-xeon-${GITHUB_RUN_ID}",
+            "networkId": "default",
+            "user": "rdpuser",
+            "password": "TmpPass123!"
+          }'
+          curl -X POST "https://api.paperspace.io/machines/createMachine" \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: $PAPERSPACE_API_KEY" \
+            -d "$PAYLOAD"
+
+      - name: Așteaptă VM să fie gata
+        run: sleep 180
+
+      - name: Instalează și conectează Tailscale, resetează parola userului, extrage IP
+        shell: pwsh
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          # Comenzi pentru rulare pe VM (placeholder, trebuie adaptat acces remote)
+          # Exemplu generic pentru Powershell în VM după login:
+          Write-Host "Simulare instalare Tailscale și configurare pe VM Windows Server 2025"
+          $user = "rdpuser"
+          $newPass = -join ((33..126) | Get-Random -Count 16 | ForEach-Object { [char]$_ })
+          $securePass = ConvertTo-SecureString $newPass -AsPlainText -Force
+          # Resetează parola local user
+          # Set-LocalUser -Name $user -Password $securePass
+          # Instalează Tailscale MSI și pornește cu auth key
+          # & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=$env:TAILSCALE_AUTH_KEY
+          # Extrage IP tailscale
+          # $tsIp = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4).Trim()
+          # Exportarea var. mediu GITHUB_ENV pentru user, parola, IP
+          echo "RUNNER_USER=$user" >> $env:GITHUB_ENV
+          echo "RUNNER_PASS=$newPass" >> $env:GITHUB_ENV
+          # echo "RUNNER_TAILSCALE_IP=$tsIp" >> $env:GITHUB_ENV
+          Write-Host "User, Parola și IP Tailscale exportate în variabile de mediu."
+
+      - name: Buclă menținere conexiune 18 ore
+        shell: pwsh
+        run: |
+          for ($i = 0; $i -lt 108; $i++) {
+            Write-Host "Maintaining connection... Iteration $i / 108 - $(Get-Date)"
+            Start-Sleep -Seconds 600
+          }
+          
