@@ -1,0 +1,46 @@
+name: Emulare Ryzen7 VM + SSD mare Windows Server 2022
+
+on:
+  workflow_dispatch:
+
+jobs:
+  vm-setup:
+    runs-on: windows-2022
+    timeout-minutes: 1080
+
+    steps:
+      - name: Creează disc virtual 500GB
+        shell: pwsh
+        run: |
+          $diskPath = "$env:TEMP\emulatedDisk.vhdx"
+          New-VHD -Path $diskPath -SizeBytes 500GB -Dynamic
+          Write-Host "Disc virtual 500GB creat la: $diskPath"
+
+      - name: Creează VM Hyper-V cu 16 vCPU și 64GB RAM
+        shell: pwsh
+        run: |
+          $vmName = "Ryzen7VM"
+          $vhdPath = "$env:TEMP\emulatedDisk.vhdx"
+          New-VM -Name $vmName -MemoryStartupBytes 64GB -Generation 2 -NewVHDPath $vhdPath -NewVHDSizeBytes 500GB
+          Set-VMProcessor -VMName $vmName -Count 16
+          Start-VM -Name $vmName
+          Write-Host "VM $vmName creată și pornită cu 16 vCPU și 64GB RAM"
+
+      - name: Așteaptă start VM
+        shell: pwsh
+        run: Start-Sleep -Seconds 60
+
+      - name: Exemplu exec script în VM (remote PowerShell session)
+        shell: pwsh
+        run: |
+          # Configurarea accesului remote PowerShell este necesară
+          Write-Host "Execută setup Tailscale sau alte taskuri în VM"
+
+      - name: Menținere conexiune loop 18 ore
+        shell: pwsh
+        run: |
+          for ($i = 0; $i -lt 108; $i++) {
+            Write-Host "Mențin conexiunea... Iterația $i / 108 - $(Get-Date)"
+            Start-Sleep -Seconds 600
+          }
+          
