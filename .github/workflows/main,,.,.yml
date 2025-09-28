@@ -1,0 +1,80 @@
+name: Paperspace RDP Intel Xeon + Tailscale + Show Credentials
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rdp-setup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1080
+
+    steps:
+      - name: Creează VM Paperspace Intel Xeon + Windows Server 2025
+        env:
+          PAPERSPACE_API_KEY: ${{ secrets.PAPERSPACE_API_KEY }}
+        run: |
+          PAYLOAD='{
+            "machineType": "C4",
+            "region": "ams1",
+            "billingType": "hourly",
+            "imageId": "windows-server-2025",
+            "name": "rdp-intel-xeon-${GITHUB_RUN_ID}",
+            "networkId": "default",
+            "user": "rdpuser",
+            "password": "TmpPass123!"
+          }'
+          curl -X POST "https://api.paperspace.io/machines/createMachine" \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: $PAPERSPACE_API_KEY" \
+            -d "$PAYLOAD"
+
+      - name: Așteaptă VM să fie gata
+        run: sleep 180
+
+      - name: Execută PowerShell remote pentru instalare Tailscale și reset parole
+        shell: pwsh
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          # Generează o parolă random pentru userul rdpuser
+          function GenPass { -join ((33..126) | Get-Random -Count 16 | % {[char]$_}) }
+          $user = "rdpuser"
+          $newPass = GenPass
+          $securePass = ConvertTo-SecureString $newPass -AsPlainText -Force
+
+          # Resetează parola userului local
+          Try {
+            Set-LocalUser -Name $user -Password $securePass
+            Write-Host "Parola pentru user $user a fost resetată."
+          } Catch {
+            Write-Host "Eroare la resetarea parolei: $_"
+          }
+
+          # Instalează Tailscale
+          $tsInstaller = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile $tsInstaller
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$tsInstaller`"", "/quiet", "/norestart" -Wait
+          Remove-Item $tsInstaller
+
+          # Pornește Tailscale cu auth key
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${env:TAILSCALE_AUTH_KEY} --hostname="rdp-intel-xeon-${env:GITHUB_RUN_ID}"
+
+          # Obține IP Tailscale
+          $tsIp = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          $tsIp = $tsIp.Trim()
+
+          # Afișează user, parola și IP în log
+          Write-Host "=== DATE ACCES RDP ==="
+          Write-Host "User: $user"
+          Write-Host "Parola: $newPass"
+          Write-Host "IP Tailscale: $tsIp"
+          Write-Host "======================"
+
+      - name: Menține conexiunea rulând în loop 18 ore
+        shell: pwsh
+        run: |
+          for ($i = 0; $i -lt 108; $i++) {
+            Write-Host "Mențin conexiunea... Iterația $i / 108 - $(Get-Date)"
+            Start-Sleep -Seconds 600
+          }
+          
