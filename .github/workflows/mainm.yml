@@ -1,0 +1,64 @@
+name: Paperspace RDP Intel Xeon + Tailscale + Credentials
+
+on:
+  workflow_dispatch:
+
+jobs:
+  create_vm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1080
+
+    steps:
+      - name: Creează VM Paperspace Intel Xeon + Windows Server 2025
+        env:
+          PAPERSPACE_API_KEY: ${{ secrets.PAPERSPACE_API_KEY }}
+        run: |
+          PAYLOAD='{
+            "machineType": "C4",
+            "region": "ams1",
+            "billingType": "hourly",
+            "imageId": "windows-server-2025",
+            "name": "rdp-intel-xeon-${GITHUB_RUN_ID}",
+            "networkId": "default",
+            "user": "rdpuser",
+            "password": "TmpPass123!"
+          }'
+          curl -X POST "https://api.paperspace.io/machines/createMachine" \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: $PAPERSPACE_API_KEY" \
+            -d "$PAYLOAD"
+
+      - name: Așteaptă 5 minute pentru pregătirea VM
+        run: sleep 300
+
+      - name: Script PowerShell pentru configurare Tailscale și resetare parolă după boot VM
+        run: |
+          echo "Rulați acest script PowerShell în VM Windows 2025 după boot:"
+          echo "
+          function GenPass { -join ((33..126) | Get-Random -Count 16 | ForEach-Object { [char]\$_ }) }
+          \$user = 'rdpuser'
+          \$newPass = GenPass
+          \$securePass = ConvertTo-SecureString \$newPass -AsPlainText -Force
+          Set-LocalUser -Name \$user -Password \$securePass
+          Write-Host 'Parola a fost resetată pentru userul:' \$user
+          \$tsInstaller = '\$env:TEMP\tailscale.msi'
+          Invoke-WebRequest -Uri 'https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi' -OutFile \$tsInstaller
+          Start-Process msiexec.exe -ArgumentList '/i', \"\$tsInstaller\", '/quiet', '/norestart' -Wait
+          Remove-Item \$tsInstaller
+          & \"\$env:ProgramFiles\Tailscale\tailscale.exe\" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname='rdp-intel-xeon-${GITHUB_RUN_ID}'
+          \$tsIp = (& \"\$env:ProgramFiles\Tailscale\tailscale.exe\" ip -4).Trim()
+          Write-Host '=== DATE ACCES RDP ==='
+          Write-Host 'User:' \$user
+          Write-Host 'Parola:' \$newPass
+          Write-Host 'IP Tailscale:' \$tsIp
+          Write-Host '====================='
+          "
+
+      - name: Mantine conexiunea 18 ore
+        shell: pwsh
+        run: |
+          for (\$i = 0; \$i -lt 108; \$i++) {
+            Write-Host \"Mențin conexiunea... Iterația \$i / 108 - \$(Get-Date)\"
+            Start-Sleep -Seconds 600
+          }
+          
